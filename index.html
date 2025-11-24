@@ -1,0 +1,482 @@
+<!--
+Projeto: Dashboard de Eficiência (versão completa)
+Conteúdo:
+- index.html com CSS e JS embutidos (funcionalidade completa)
+- Export CSV, Export PDF (jsPDF + html2canvas)
+- Gráficos com Chart.js (referências corretas aos canvas)
+- Edição de atividades
+- Salvamento/Leitura via Google Apps Script (exemplo abaixo)
+
+Instruções rápidas de uso:
+1) Abra este arquivo localmente para testar a UI (algumas funções que usam fetch para API exigem Web App URL do Apps Script).
+2) Substitua const API_URL = "SUA_URL_DO_WEB_APP_AQUI" pela URL do seu Web App (como descrito no bloco do Apps Script no final).
+3) No Apps Script: cole o código fornecido, publique como "Implantar > Nova implantação" > Tipo: Aplicativo da Web > Acesso: "Qualquer pessoa, mesmo anônima" (ou conforme sua necessidade).
+4) Ajuste client_id do Google Sign-In se necessário.
+-->
+
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Dashboard de Eficiência — Completo</title>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <!-- jsPDF + html2canvas para PDF -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
+
+  <!-- Google Identity -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+  <style>
+    :root{--bg:#0f1720;--card:#0b1220;--muted:#9aa6b2;--accent:#0ea5a3;--danger:#ef4444}
+    *{box-sizing:border-box;font-family:Inter,Roboto,system-ui,-apple-system,Segoe UI,Arial}
+    body{margin:0;background:linear-gradient(180deg,#071024 0%,var(--bg) 100%);color:#e6eef6}
+    .container{max-width:1100px;margin:28px auto;padding:18px}
+    header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
+    header h1{margin:0;font-size:20px}
+    button{cursor:pointer}
+    .main-card{background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);padding:18px;border-radius:12px;margin-bottom:14px}
+    #totalEff{font-size:40px;font-weight:700;margin:8px 0}
+    .progress-bar{height:12px;background:rgba(255,255,255,0.06);border-radius:999px;overflow:hidden}
+    #progressFill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),#7dd3fc);transition:width 600ms}
+    .form-section{background:var(--card);padding:12px;border-radius:10px;margin-bottom:14px}
+    .form-group{display:flex;gap:8px;flex-wrap:wrap}
+    select,input{padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:inherit;min-width:150px}
+    #addBtn{padding:10px 14px;border-radius:8px;background:var(--accent);border:none;color:#042127}
+    .table-section{background:var(--card);padding:12px;border-radius:10px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:8px;text-align:left;border-bottom:1px solid rgba(255,255,255,0.03);font-size:13px}
+    .danger{background:transparent;border:1px solid rgba(255,255,255,0.06);padding:8px;border-radius:8px}
+    .charts{display:grid;grid-template-columns:1fr 360px;gap:12px;margin-top:12px}
+    .chart-card{background:var(--card);padding:12px;border-radius:10px}
+    .controls{display:flex;gap:8px;margin-top:8px}
+    .small{font-size:12px;padding:6px 8px}
+    .editBtn{background:#1e293b;border:none;padding:6px 8px;border-radius:6px;color:#e6eef6}
+    @media(max-width:900px){.charts{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+
+  <!-- LOGIN -->
+  <div id="loginArea" style="text-align:center;margin-top:60px">
+    <h2>Entrar no Sistema</h2>
+    <div id="googleBtn" style="margin-top:20px"></div>
+    <p style="color:var(--muted);margin-top:12px">Use uma conta Google para carregar suas atividades salvas.</p>
+  </div>
+
+  <!-- APP -->
+  <div id="app" style="display:none">
+    <div class="container">
+      <header>
+        <h1>Dashboard de Eficiência</h1>
+        <div>
+          <button id="toggleTheme" class="small">🌙</button>
+          <button id="logoutBtn" class="small">Sair</button>
+        </div>
+      </header>
+
+      <section class="main-card">
+        <h2>Eficiência Total</h2>
+        <div id="totalEff">0%</div>
+        <div class="progress-bar"><div id="progressFill"></div></div>
+        <div style="margin-top:10px;color:var(--muted);font-size:13px">Média ponderada por quantidade (padrão).<label style="margin-left:6px"><input type="checkbox" id="pesoTempo"> Ponderar por tempo</label></div>
+      </section>
+
+      <section class="form-section">
+        <h3>Cadastrar Atividade</h3>
+        <div class="form-group">
+          <select id="atividade">
+            <option value="" disabled selected>Selecione</option>
+            <option>Atendimento ao Público</option>
+            <option>Análise de Processos</option>
+            <option>Digitação de Documentos</option>
+            <option>Relatórios Administrativos</option>
+            <option>Protocolos e Arquivos</option>
+            <option>Auditoria de Dados</option>
+          </select>
+
+          <input type="number" id="quantidade" placeholder="Quantidade Produzida" />
+          <input type="number" id="meta" placeholder="Meta Esperada" />
+          <input type="number" id="tempo" placeholder="Tempo gasto (min)" />
+
+          <button id="addBtn">Adicionar</button>
+          <button id="saveEditBtn" style="display:none" class="small">Salvar edição</button>
+          <button id="cancelEditBtn" style="display:none" class="small">Cancelar</button>
+        </div>
+      </section>
+
+      <section class="table-section">
+        <h3>Atividades Registradas</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Atividade</th>
+              <th>Produção</th>
+              <th>Meta</th>
+              <th>Eficiência</th>
+              <th>Tempo</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody id="tableBody"></tbody>
+        </table>
+
+        <div class="controls" style="margin-top:10px">
+          <button id="clearBtn" class="danger">Limpar Dados</button>
+          <button id="exportBtn">Exportar CSV</button>
+          <button id="exportPDF">Exportar PDF</button>
+        </div>
+      </section>
+
+      <section class="charts">
+        <div class="chart-card">
+          <h3>Produtividade por Atividade</h3>
+          <canvas id="barChart" height="220"></canvas>
+        </div>
+
+        <div class="chart-card">
+          <h3>Distribuição das Atividades</h3>
+          <canvas id="pieChart" height="220"></canvas>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+  <script>
+  // ======================
+  // CONFIG
+  // ======================
+  const API_URL = "1015249953134-nn3vc5i8buuutooscniu90r2tet1596m.apps.googleusercontent.com"; // <<< COLE SUA URL AQUI
+  let usuarioEmail = null;
+  let data = [];
+  let editingIndex = null;
+
+  // Element refs
+  const totalEff = document.getElementById('totalEff');
+  const progressFill = document.getElementById('progressFill');
+  const barChartEl = document.getElementById('barChart');
+  const pieChartEl = document.getElementById('pieChart');
+  const atividade = document.getElementById('atividade');
+  const quantidade = document.getElementById('quantidade');
+  const meta = document.getElementById('meta');
+  const tempo = document.getElementById('tempo');
+  const addBtn = document.getElementById('addBtn');
+  const saveEditBtn = document.getElementById('saveEditBtn');
+  const cancelEditBtn = document.getElementById('cancelEditBtn');
+  const tableBody = document.getElementById('tableBody');
+  const clearBtn = document.getElementById('clearBtn');
+  const exportBtn = document.getElementById('exportBtn');
+  const exportPDFBtn = document.getElementById('exportPDF');
+  const pesoTempoCheckbox = document.getElementById('pesoTempo');
+  const toggleTheme = document.getElementById('toggleTheme');
+  const logoutBtn = document.getElementById('logoutBtn');
+
+  let barChart, pieChart;
+
+  // ======================
+  // GOOGLE LOGIN
+  // ======================
+  window.onload = () => {
+    google.accounts.id.initialize({
+      client_id: '1015249953134-nn3vc5i8buuutooscniu90r2tet1596m.apps.googleusercontent.com',
+      callback: handleLogin
+    });
+
+    google.accounts.id.renderButton(document.getElementById('googleBtn'), { theme: 'filled_blue', size: 'large' });
+    google.accounts.id.prompt();
+  };
+
+  function handleLogin(response) {
+    try{
+      const payload = JSON.parse(atob(response.credential.split('.')[1]));
+      usuarioEmail = payload.email;
+      document.getElementById('loginArea').style.display = 'none';
+      document.getElementById('app').style.display = 'block';
+      carregarDados();
+    }catch(e){
+      alert('Erro no login: '+e.message);
+    }
+  }
+
+  logoutBtn.onclick = () => {
+    // Simples esconder app — se quiser limpar token, use o método accounts.id.revoke
+    usuarioEmail = null;
+    document.getElementById('app').style.display = 'none';
+    document.getElementById('loginArea').style.display = 'block';
+    data = [];
+    atualizarTabela();
+  }
+
+  // ======================
+  // CARREGAR DADOS DO USUARIO
+  // ======================
+  async function carregarDados(){
+    if(!API_URL || API_URL.includes('SUA_URL_DO_WEB_APP')){
+      // sem backend: usar localStorage como fallback
+      const raw = localStorage.getItem('eficiencia_data_'+(usuarioEmail||'anon'));
+      data = raw ? JSON.parse(raw) : [];
+      atualizarTabela();
+      return;
+    }
+
+    try{
+      const r = await fetch(`${API_URL}?email=${encodeURIComponent(usuarioEmail)}`);
+      const json = await r.json();
+      // espera sheet com cabeçalho; converte de acordo com seu apps script
+      data = (json.data || []).slice(1).map(row=>({
+        usuario: row[0], nome: row[1], qtd: Number(row[2]), meta: Number(row[3]), tempo: Number(row[4]), eficiencia: Number(row[5])
+      }));
+      atualizarTabela();
+    }catch(e){
+      console.warn('Erro ao carregar dados, usando localStorage',e);
+      const raw = localStorage.getItem('eficiencia_data_'+(usuarioEmail||'anon'));
+      data = raw ? JSON.parse(raw) : [];
+      atualizarTabela();
+    }
+  }
+
+  // ======================
+  // SALVAR NO SHEETS (ou localStorage)
+  // ======================
+  async function salvarNoSheets(item){
+    item.usuario = usuarioEmail;
+    if(!API_URL || API_URL.includes('SUA_URL_DO_WEB_APP')){
+      // fallback local
+      data.push(item);
+      persistLocal();
+      atualizarTabela();
+      return;
+    }
+
+    await fetch(API_URL,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({acao:'add', ...item})
+    });
+    carregarDados();
+  }
+
+  async function atualizarNoSheets(index, item){
+    if(!API_URL || API_URL.includes('SUA_URL_DO_WEB_APP')){
+      data[index] = item; persistLocal(); atualizarTabela(); return;
+    }
+    await fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'update', index, ...item})});
+    carregarDados();
+  }
+
+  async function remover(index){
+    if(!confirm('Excluir atividade?')) return;
+    if(!API_URL || API_URL.includes('SUA_URL_DO_WEB_APP')){ data.splice(index,1); persistLocal(); atualizarTabela(); return; }
+    await fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'delete', index, usuario:usuarioEmail})});
+    carregarDados();
+  }
+
+  async function limparTudo(){
+    if(!confirm('Limpar todos os dados salvos?')) return;
+    if(!API_URL || API_URL.includes('SUA_URL_DO_WEB_APP')){ data=[]; persistLocal(); atualizarTabela(); return; }
+    await fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'clear', usuario:usuarioEmail})});
+    carregarDados();
+  }
+
+  function persistLocal(){
+    localStorage.setItem('eficiencia_data_'+(usuarioEmail||'anon'), JSON.stringify(data));
+  }
+
+  // ======================
+  // ATUALIZAR INTERFACE
+  // ======================
+  function atualizarTabela(){
+    tableBody.innerHTML='';
+    data.forEach((item,index)=>{
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${escapeHtml(item.nome)}</td>
+        <td>${item.qtd}</td>
+        <td>${item.meta}</td>
+        <td>${(item.eficiencia||0).toFixed(1)}%</td>
+        <td>${item.tempo} min</td>
+        <td>
+          <button class="editBtn" onclick="startEdit(${index})">Editar</button>
+          <button class="danger" onclick="remover(${index})">Excluir</button>
+        </td>`;
+      tableBody.appendChild(tr);
+    });
+    atualizarDashboard();
+  }
+
+  // expose startEdit to global for inline onclick
+  window.startEdit = function(i){
+    editingIndex = i;
+    const it = data[i];
+    atividade.value = it.nome; quantidade.value = it.qtd; meta.value = it.meta; tempo.value = it.tempo;
+    addBtn.style.display='none'; saveEditBtn.style.display='inline-block'; cancelEditBtn.style.display='inline-block';
+  }
+
+  cancelEditBtn.onclick = ()=>{
+    editingIndex = null; addBtn.style.display='inline-block'; saveEditBtn.style.display='none'; cancelEditBtn.style.display='none'; clearForm();
+  }
+
+  saveEditBtn.onclick = ()=>{
+    const nome = atividade.value; const qtdVal=Number(quantidade.value); const metaVal=Number(meta.value); const tempoVal=Number(tempo.value);
+    if(!nome||!qtdVal||!metaVal||!tempoVal) return alert('Preencha tudo!');
+    const eficiencia = (qtdVal/metaVal)*100;
+    const item = {nome, qtd:qtdVal, meta:metaVal, tempo:tempoVal, eficiencia};
+    atualizarNoSheets(editingIndex, item);
+    editingIndex=null; addBtn.style.display='inline-block'; saveEditBtn.style.display='none'; cancelEditBtn.style.display='none'; clearForm();
+  }
+
+  function clearForm(){ atividade.value=''; quantidade.value=''; meta.value=''; tempo.value=''; }
+
+  // ======================
+  // ADICIONAR ATIVIDADE
+  // ======================
+  addBtn.onclick = ()=>{
+    const nome = atividade.value; const qtdVal=Number(quantidade.value); const metaVal=Number(meta.value); const tempoVal=Number(tempo.value);
+    if(!nome||!qtdVal||!metaVal||!tempoVal) return alert('Preencha tudo!');
+    const eficiencia = (qtdVal/metaVal)*100;
+    salvarNoSheets({nome,qtd:qtdVal,meta:metaVal,tempo:tempoVal,eficiencia});
+    clearForm();
+  }
+
+  // ======================
+  // DASHBOARD / MÉTRICAS
+  // ======================
+  function atualizarDashboard(){
+    // média ponderada por quantidade ou por tempo
+    const useTempo = pesoTempoCheckbox.checked;
+    let total=0, pesoTotal=0;
+    data.forEach(x=>{
+      const peso = useTempo ? x.tempo : x.qtd;
+      total += (x.eficiencia||0) * peso; pesoTotal += peso;
+    });
+    const media = pesoTotal ? (total/pesoTotal) : 0;
+    totalEff.innerText = media.toFixed(1) + '%';
+    progressFill.style.width = Math.min(100, media) + '%';
+    atualizarGraficos();
+  }
+
+  // ======================
+  // GRÁFICOS
+  // ======================
+  function atualizarGraficos(){
+    const labels = data.map(x=>x.nome);
+    const producao = data.map(x=>x.qtd);
+
+    if(barChart) barChart.destroy();
+    if(pieChart) pieChart.destroy();
+
+    barChart = new Chart(barChartEl, {type:'bar', data:{labels, datasets:[{label:'Produção',data:producao}]}, options:{responsive:true}});
+    pieChart = new Chart(pieChartEl, {type:'pie', data:{labels, datasets:[{data:producao}]}, options:{responsive:true}});
+  }
+
+  // ======================
+  // EXPORT CSV
+  // ======================
+  function exportCSV(){
+    const header = ['Atividade','Produção','Meta','Eficiência','Tempo(min)'];
+    const rows = data.map(d=>[d.nome,d.qtd,d.meta,(d.eficiencia||0).toFixed(1),d.tempo]);
+    const csv = [header, ...rows].map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `eficiencia_${(usuarioEmail||'anon')}.csv`; a.click(); URL.revokeObjectURL(url);
+  }
+  exportBtn.onclick = exportCSV;
+
+  // ======================
+  // EXPORT PDF (usando html2canvas + jsPDF)
+  // ======================
+  async function exportPDF(){
+    const el = document.querySelector('.container');
+    const canvas = await html2canvas(el, {scale:2});
+    const imgData = canvas.toDataURL('image/png');
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({orientation:'portrait',unit:'pt',format:'a4'});
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const imgWidth = pageWidth - 40; const imgHeight = canvas.height * (imgWidth / canvas.width);
+    pdf.addImage(imgData,'PNG',20,20,imgWidth,imgHeight);
+    pdf.save(`dashboard_eficiencia_${(usuarioEmail||'anon')}.pdf`);
+  }
+  exportPDFBtn.onclick = exportPDF;
+
+  // ======================
+  // LIMPAR
+  // ======================
+  clearBtn.onclick = ()=>{ limparTudo(); }
+
+  // ======================
+  // UTILITÁRIOS
+  // ======================
+  function escapeHtml(s){ return String(s).replace(/[&<>\"]+/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]||c)); }
+
+  // tema simples
+  toggleTheme.onclick = ()=>{ document.body.classList.toggle('light'); if(document.body.classList.contains('light')){ document.body.style.background='white'; document.body.style.color='#041019'; } else { document.body.style.background='linear-gradient(180deg,#071024 0%,var(--bg) 100%)'; document.body.style.color='#e6eef6'; } }
+
+  // persistência local quando sem backend
+  window.addEventListener('beforeunload', ()=>{ if(!API_URL || API_URL.includes('SUA_URL_DO_WEB_APP')) persistLocal(); });
+
+  </script>
+
+  <!--
+  -----------------------------
+  Google Apps Script (Server) — cole em um novo projeto do Apps Script
+  Substitua SHEET_ID e SHEET_NAME conforme necessário.
+  Publicar -> Implantar -> Aplicativo da Web -> Acesso: Qualquer pessoa, mesmo anônima (ou conforme sua política)
+  -----------------------------
+  -->
+  
+  <!--
+  Código Apps Script (JavaScript - servidor) - NÃO executar no navegador
+
+  const SHEET_ID = 'COLE_ID_DA_PLANILHA_AQUI';
+  const SHEET_NAME = 'Sheet1';
+
+  function doGet(e){
+    const ss = SpreadsheetApp.openById(SHEET_ID);
+    const sheet = ss.getSheetByName(SHEET_NAME);
+    const values = sheet.getDataRange().getValues();
+    return ContentService.createTextOutput(JSON.stringify({data:values})).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  function doPost(e){
+    const ss = SpreadsheetApp.openById(SHEET_ID);
+    const sheet = ss.getSheetByName(SHEET_NAME);
+    const payload = e.postData.contents ? JSON.parse(e.postData.contents) : {};
+    const acao = payload.acao;
+    if(acao==='add'){
+      // formato: [usuario,nome,qtd,meta,tempo,eficiencia]
+      sheet.appendRow([payload.usuario||'', payload.nome||'', payload.qtd||0, payload.meta||0, payload.tempo||0, payload.eficiencia||0]);
+      return ContentService.createTextOutput(JSON.stringify({ok:true})).setMimeType(ContentService.MimeType.JSON);
+    }
+    if(acao==='delete'){
+      // aqui assumimos que o index é a linha (incluindo cabeçalho) menos 1. Ajuste conforme sua lógica
+      const index = Number(payload.index);
+      const headerRows = 1; // se você usa 1 linha de cabeçalho
+      sheet.deleteRow(index + 1 + headerRows);
+      return ContentService.createTextOutput(JSON.stringify({ok:true})).setMimeType(ContentService.MimeType.JSON);
+    }
+    if(acao==='clear'){
+      const email = payload.usuario;
+      const values = sheet.getDataRange().getValues();
+      const header = values.shift();
+      const filtered = values.filter(r => r[0] !== email);
+      sheet.clearContents();
+      sheet.appendRow(header);
+      if(filtered.length) sheet.getRange(2,1,filtered.length,filtered[0].length).setValues(filtered);
+      return ContentService.createTextOutput(JSON.stringify({ok:true})).setMimeType(ContentService.MimeType.JSON);
+    }
+    if(acao==='update'){
+      const index = Number(payload.index);
+      const headerRows = 1;
+      sheet.getRange(index + 1 + headerRows,1,1,6).setValues([[payload.usuario||'',payload.nome||'',payload.qtd||0,payload.meta||0,payload.tempo||0,payload.eficiencia||0]]);
+      return ContentService.createTextOutput(JSON.stringify({ok:true})).setMimeType(ContentService.MimeType.JSON);
+    }
+    return ContentService.createTextOutput(JSON.stringify({ok:false,error:'ação desconhecida'})).setMimeType(ContentService.MimeType.JSON);
+  }
+  -->
+
+</body>
+</html>
